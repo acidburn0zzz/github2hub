@@ -3,7 +3,7 @@ package commands
 import (
 	"testing"
 
-	"github.com/bmizerany/assert"
+	"github.com/github/hub/v2/internal/assert"
 )
 
 func TestNewArgs(t *testing.T) {
@@ -118,4 +118,23 @@ func TestArgs_GlobalFlags_Replaced(t *testing.T) {
 	cmd := args.ToCmd()
 	assert.Equal(t, "open", cmd.Name)
 	assert.Equal(t, []string{"-a", "http://example.com"}, cmd.Args)
+}
+
+func TestArgs_ToCmd(t *testing.T) {
+	args := NewArgs([]string{"a", "", "b", ""})
+	cmd := args.ToCmd()
+	assert.Equal(t, []string{"a", "", "b", ""}, cmd.Args)
+}
+
+func TestArgs_GlobalFlags_BeforeAfterChain(t *testing.T) {
+	args := NewArgs([]string{"-c", "key=value", "-C", "dir", "status"})
+	args.Before("git", "remote", "add")
+	args.After("git", "clean")
+	args.After("echo", "done!")
+	cmds := args.Commands()
+	assert.Equal(t, 4, len(cmds))
+	assert.Equal(t, "git -c key=value -C dir remote add", cmds[0].String())
+	assert.Equal(t, "git -c key=value -C dir status", cmds[1].String())
+	assert.Equal(t, "git -c key=value -C dir clean", cmds[2].String())
+	assert.Equal(t, "echo done!", cmds[3].String())
 }

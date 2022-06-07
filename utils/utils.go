@@ -10,7 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/github/hub/ui"
+	"github.com/github/hub/v2/ui"
+	"github.com/kballard/go-shellquote"
 )
 
 var timeNow = time.Now
@@ -30,13 +31,15 @@ func BrowserLauncher() ([]string, error) {
 	browser := os.Getenv("BROWSER")
 	if browser == "" {
 		browser = searchBrowserLauncher(runtime.GOOS)
+	} else {
+		browser = os.ExpandEnv(browser)
 	}
 
 	if browser == "" {
 		return nil, errors.New("Please set $BROWSER to a web launcher")
 	}
 
-	return strings.Split(browser, " "), nil
+	return shellquote.Split(browser)
 }
 
 func searchBrowserLauncher(goos string) (browser string) {
@@ -61,7 +64,7 @@ func searchBrowserLauncher(goos string) (browser string) {
 }
 
 func CommandPath(cmd string) (string, error) {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" && !strings.HasSuffix(cmd, ".exe") {
 		cmd = cmd + ".exe"
 	}
 

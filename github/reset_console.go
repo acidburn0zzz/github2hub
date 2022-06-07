@@ -1,3 +1,4 @@
+//go:build !windows
 // +build !windows
 
 package github
@@ -5,7 +6,7 @@ package github
 import (
 	"os"
 
-	"github.com/github/hub/cmd"
+	"github.com/github/hub/v2/cmd"
 )
 
 func setConsole(cmd *cmd.Cmd) {

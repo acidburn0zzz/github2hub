@@ -1,31 +1,28 @@
 require 'fileutils'
 
-Given(/^HTTPS is preferred$/) do
-  run_silent %(git config --global hub.protocol https)
+Given(/^git protocol is preferred$/) do
+  set_environment_variable "HUB_PROTOCOL", "git"
 end
 
 Given(/^there are no remotes$/) do
-  result = run_silent('git remote')
-  expect(result).to be_empty
+  output = run_ignored_command 'git remote'
+  expect(output).to be_empty
 end
 
 Given(/^"([^"]*)" is a whitelisted Enterprise host$/) do |host|
-  run_silent %(git config --global --add hub.host "#{host}")
+  run_ignored_command %(git config --global --add hub.host "#{host}")
 end
 
 Given(/^git "(.+?)" is set to "(.+?)"$/) do |key, value|
-  run_silent %(git config #{key} "#{value}")
+  run_ignored_command %(git config #{key} "#{value}")
 end
 
 Given(/^the "([^"]*)" remote has(?: (push))? url "([^"]*)"$/) do |remote_name, push, url|
-  remotes = run_silent('git remote').split("\n")
-  if push
-    push = "--push"
-  end
-  unless remotes.include? remote_name
-    run_silent %(git remote add #{remote_name} "#{url}")
+  remotes = run_ignored_command 'git remote'
+  unless remotes.split("\n").include? remote_name
+    run_ignored_command %(git remote add #{remote_name} "#{url}")
   else
-    run_silent %(git remote set-url #{push} #{remote_name} "#{url}")
+    run_ignored_command %(git remote set-url #{"--push" if push} #{remote_name} "#{url}")
   end
 end
 
@@ -40,7 +37,8 @@ Given(/^I am "([^"]*)" on ([\S]+)(?: with OAuth token "([^"]*)")?$/) do |name, h
 end
 
 Given(/^\$(\w+) is "([^"]*)"$/) do |name, value|
-  set_env name, value.gsub(/\$([A-Z_]+)/) { ENV.fetch($1) }
+  expanded_value = value.gsub(/\$([A-Z_]+)/) { aruba.environment[$1] }
+  set_environment_variable(name, expanded_value)
 end
 
 Given(/^I am in "([^"]*)" git repo$/) do |dir_name|
@@ -54,23 +52,18 @@ Given(/^I am in "([^"]*)" git repo$/) do |dir_name|
 end
 
 Given(/^a (bare )?git repo in "([^"]*)"$/) do |bare, dir_name|
-  step %(a directory named "#{dir_name}")
-  dirs << dir_name
-  step %(I successfully run `git init --quiet #{"--bare" if bare}`)
-  dirs.pop
+  run_ignored_command %(git -c init.defaultBranch=master init --quiet #{"--bare" if bare} '#{dir_name}')
 end
 
 Given(/^a git bundle named "([^"]*)"$/) do |file|
-  in_current_dir do
-    FileUtils.mkdir_p File.dirname(file)
-    dest = File.expand_path(file)
+  dest = expand_path(file)
+  FileUtils.mkdir_p(File.dirname(dest))
 
-    Dir.mktmpdir do |tmpdir|
-      dirs << tmpdir
-      run_silent %(git init --quiet)
-      empty_commit
-      run_silent %(git bundle create "#{dest}" master)
-      dirs.pop
+  Dir.mktmpdir do |tmpdir|
+    Dir.chdir(tmpdir) do
+      `git -c init.defaultBranch=master init --quiet`
+      `GIT_COMMITTER_NAME=a GIT_COMMITTER_EMAIL=b git commit --quiet -m 'empty' --allow-empty --author='a <b>'`
+      `git bundle create "#{dest}" master 2>&1`
     end
   end
 end
@@ -78,19 +71,19 @@ end
 Given(/^there is a commit named "([^"]+)"$/) do |name|
   empty_commit
   empty_commit
-  run_silent %(git tag #{name})
-  run_silent %(git reset --quiet --hard HEAD^)
+  run_ignored_command %(git tag #{name})
+  run_ignored_command %(git reset --quiet --hard HEAD^)
 end
 
 Given(/^there is a git FETCH_HEAD$/) do
   empty_commit
   empty_commit
-  in_current_dir do
+  cd('.') do
     File.open(".git/FETCH_HEAD", "w") do |fetch_head|
       fetch_head.puts "%s\t\t'refs/heads/made-up' of git://github.com/made/up.git" % `git rev-parse HEAD`.chomp
     end
   end
-  run_silent %(git reset --quiet --hard HEAD^)
+  run_ignored_command %(git reset --quiet --hard HEAD^)
 end
 
 When(/^I make (a|\d+) commits?(?: with message "([^"]+)")?$/) do |num, msg|
@@ -107,32 +100,35 @@ Then(/^the latest commit message should be "([^"]+)"$/) do |subject|
   step %(the output should contain exactly "#{subject}\\n")
 end
 
+# expand `<$HOME>` etc. in matched text
+Then(/^(the (?:output|stderr|stdout)) with expanded variables( should contain(?: exactly)?:)/) do |prefix, postfix, text|
+  step %(#{prefix}#{postfix}), text.gsub(/<\$(\w+)>/) { aruba.environment[$1] }
+end
+
 Given(/^the "([^"]+)" branch is pushed to "([^"]+)"$/) do |name, upstream|
   full_upstream = ".git/refs/remotes/#{upstream}"
-  in_current_dir do
+  cd('.') do
     FileUtils.mkdir_p File.dirname(full_upstream)
     FileUtils.cp ".git/refs/heads/#{name}", full_upstream
   end
 end
 
 Given(/^I am on the "([^"]+)" branch(?: (pushed to|with upstream) "([^"]+)")?$/) do |name, type, upstream|
-  run_silent %(git checkout --quiet -b #{shell_escape name})
+  run_ignored_command %(git checkout --quiet -b #{shell_escape name})
   empty_commit
 
   if upstream
-    unless upstream == 'refs/heads/master'
-      full_upstream = upstream.start_with?('refs/') ? upstream : "refs/remotes/#{upstream}"
-      run_silent %(git update-ref #{shell_escape full_upstream} HEAD)
-    end
+    full_upstream = upstream.start_with?('refs/') ? upstream : "refs/remotes/#{upstream}"
+    run_ignored_command %(git update-ref #{shell_escape full_upstream} HEAD)
 
     if type == 'with upstream'
-      run_silent %(git branch --set-upstream-to #{shell_escape upstream})
+      run_ignored_command %(git branch --set-upstream-to #{shell_escape upstream})
     end
   end
 end
 
 Given(/^the default branch for "([^"]+)" is "([^"]+)"$/) do |remote, branch|
-  in_current_dir do
+  cd('.') do
     ref_file = ".git/refs/remotes/#{remote}/#{branch}"
     unless File.exist? ref_file
       empty_commit unless File.exist? '.git/refs/heads/master'
@@ -140,26 +136,17 @@ Given(/^the default branch for "([^"]+)" is "([^"]+)"$/) do |remote, branch|
       FileUtils.cp '.git/refs/heads/master', ref_file
     end
   end
-  run_silent %(git remote set-head #{remote} #{branch})
+  run_ignored_command %(git remote set-head #{remote} #{branch})
 end
 
 Given(/^I am in detached HEAD$/) do
   empty_commit
   empty_commit
-  run_silent %(git checkout HEAD^)
+  run_ignored_command %(git checkout HEAD^)
 end
 
 Given(/^the current dir is not a repo$/) do
-  in_current_dir do
-    FileUtils.rm_rf '.git'
-  end
-end
-
-When(/^I move the file named "([^"]+)" to "([^"]+)"?$/) do |source, dest|
-  in_current_dir do
-    FileUtils.mkdir_p(File.dirname(dest))
-    FileUtils.mv(source, dest)
-  end
+  FileUtils.rm_rf(expand_path('.git'))
 end
 
 Given(/^the GitHub API server:$/) do |endpoints_str|
@@ -167,17 +154,11 @@ Given(/^the GitHub API server:$/) do |endpoints_str|
     eval endpoints_str, binding
   end
   # hit our Sinatra server instead of github.com
-  set_env 'HUB_TEST_HOST', "http://127.0.0.1:#{@server.port}"
-end
-
-Given(/^I use a debugging proxy(?: at "(.+?)")?$/) do |address|
-  address ||= 'localhost:8888'
-  set_env 'HTTP_PROXY', address
-  set_env 'HTTPS_PROXY', address
+  set_environment_variable 'HUB_TEST_HOST', "http://127.0.0.1:#{@server.port}"
 end
 
 Then(/^shell$/) do
-  in_current_dir do
+  cd('.') do
     system '/bin/bash -i'
   end
 end
@@ -198,57 +179,45 @@ Then(/^"([^"]+)" should not be run$/) do |pattern|
   history.each { |h| expect(h).to_not include(pattern) }
 end
 
-Then(/^there should be no output$/) do
-  assert_exact_output('', all_output)
-end
-
 Then(/^the git command should be unchanged$/) do
   expect(@commands).to_not be_empty
   assert_command_run @commands.last.sub(/^hub\b/, 'git')
 end
 
 Then(/^the url for "([^"]*)" should be "([^"]*)"$/) do |name, url|
-  found = run_silent %(git config --get-all remote.#{name}.url)
-  expect(found).to eql(url)
+  output = run_ignored_command %(git config --get-all remote.#{name}.url)
+  expect(output).to include(url)
 end
 
 Then(/^the "([^"]*)" submodule url should be "([^"]*)"$/) do |name, url|
-  found = run_silent %(git config --get-all submodule."#{name}".url)
-  expect(found).to eql(url)
+  output = run_ignored_command %(git config --get-all submodule."#{name}".url)
+  expect(output).to include(url)
 end
 
 Then(/^"([^"]*)" should merge "([^"]*)" from remote "([^"]*)"$/) do |name, merge, remote|
-  actual_remote = run_silent %(git config --get-all branch.#{name}.remote)
-  expect(remote).to eql(actual_remote)
+  output = run_ignored_command %(git config --get-all branch.#{name}.remote)
+  expect(output).to include(remote)
 
-  actual_merge = run_silent %(git config --get-all branch.#{name}.merge)
-  expect(merge).to eql(actual_merge)
+  output = run_ignored_command %(git config --get-all branch.#{name}.merge)
+  expect(output).to include(merge)
 end
 
 Then(/^there should be no "([^"]*)" remote$/) do |remote_name|
-  remotes = run_silent('git remote').split("\n")
-  expect(remotes).to_not include(remote_name)
+  remotes = run_ignored_command 'git remote'
+  expect(remotes.split("\n")).to_not include(remote_name)
 end
 
 Then(/^the file "([^"]*)" should have mode "([^"]*)"$/) do |file, expected_mode|
-  prep_for_fs_check do
-    mode = File.stat(file).mode
-    expect(mode.to_s(8)).to match(/#{expected_mode}$/)
-  end
-end
-
-Given(/^the file named "(.+?)" is older than hub source$/) do |file|
-  prep_for_fs_check do
-    time = File.mtime(File.expand_path('../../lib/hub/commands.rb', __FILE__)) - 60
-    File.utime(time, time, file)
-  end
+  mode = File.stat(expand_path(file)).mode
+  expect(mode.to_s(8)).to match(/#{expected_mode}$/)
 end
 
 Given(/^the remote commit states of "(.*?)" "(.*?)" are:$/) do |proj, ref, json_value|
   if ref == 'HEAD'
     empty_commit
   end
-  rev = run_silent %(git rev-parse #{ref})
+  output = run_ignored_command %(git rev-parse #{ref})
+  rev = output.chomp
 
   host, owner, repo = proj.split('/', 3)
   if repo.nil?
@@ -302,23 +271,47 @@ end
 
 When(/^I pass in:$/) do |input|
   type(input)
-  @interactive.stdin.close
+  close_input
 end
 
 Given(/^the git commit editor is "([^"]+)"$/) do |cmd|
-  set_env('GIT_EDITOR', cmd)
+  set_environment_variable('GIT_EDITOR', cmd)
 end
 
 Given(/^the SSH config:$/) do |config_lines|
-  ssh_config = "#{ENV['HOME']}/.ssh/config"
+  ssh_config = expand_path('~/.ssh/config')
   FileUtils.mkdir_p(File.dirname(ssh_config))
   File.open(ssh_config, 'w') {|f| f << config_lines }
 end
 
 Given(/^the SHAs and timestamps are normalized in "([^"]+)"$/) do |file|
-  in_current_dir do
-    contents = File.read(file)
-    contents.gsub!(/[0-9a-f]{7} \(Hub, \d seconds? ago\)/, "SHA1SHA (Hub, 0 seconds ago)")
-    File.open(file, "w") { |f| f.write(contents) }
+  file = expand_path(file)
+  contents = File.read(file)
+  contents.gsub!(/[0-9a-f]{7} \(Hub, \d seconds? ago\)/, "SHA1SHA (Hub, 0 seconds ago)")
+  File.open(file, "w") { |f| f.write(contents) }
+end
+
+Then(/^its (output|stderr|stdout) should( not)? contain( exactly)?:$/) do |channel, negated, exactly, expected|
+  matcher = case channel.to_sym
+            when :output
+              :have_output
+            when :stderr
+              :have_output_on_stderr
+            when :stdout
+              :have_output_on_stdout
+            end
+
+  commands = [last_command_started]
+
+  output_string_matcher = if exactly
+                            :an_output_string_being_eq
+                          else
+                            :an_output_string_including
+                          end
+
+  if negated
+    expect(commands).not_to include_an_object send(matcher, send(output_string_matcher, expected))
+  else
+    expect(commands).to include_an_object send(matcher, send(output_string_matcher, expected))
   end
 end

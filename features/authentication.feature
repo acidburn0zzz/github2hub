@@ -5,14 +5,9 @@ Feature: OAuth authentication
   Scenario: Ask for username & password, create authorization
     Given the GitHub API server:
       """
-      require 'socket'
-      require 'etc'
-      machine_id = "#{Etc.getlogin}@#{Socket.gethostname}"
-
       post('/authorizations') {
         assert_basic_auth 'mislav', 'kitty'
-        assert :scopes => ['repo'],
-               :note => "hub for #{machine_id}",
+        assert :scopes => ['repo', 'gist'],
                :note_url => 'https://hub.github.com/'
         status 201
         json :token => 'OTOKEN'
@@ -33,9 +28,9 @@ Feature: OAuth authentication
     Then the output should contain "github.com username:"
     And the output should contain "github.com password for mislav (never stored):"
     And the exit status should be 0
-    And the file "../home/.config/hub" should contain "user: MiSlAv"
-    And the file "../home/.config/hub" should contain "oauth_token: OTOKEN"
-    And the file "../home/.config/hub" should have mode "0600"
+    And the file "~/.config/hub" should contain "user: MiSlAv"
+    And the file "~/.config/hub" should contain "oauth_token: OTOKEN"
+    And the file "~/.config/hub" should have mode "0600"
 
   Scenario: Prompt for username & password, receive personal access token
     Given the GitHub API server:
@@ -88,13 +83,9 @@ Feature: OAuth authentication
   Scenario: Rename & retry creating authorization if there's a token name collision
     Given the GitHub API server:
       """
-      require 'socket'
-      require 'etc'
-      machine_id = "#{Etc.getlogin}@#{Socket.gethostname}"
-
       post('/authorizations') {
         assert_basic_auth 'mislav', 'kitty'
-        if params[:note] == "hub for #{machine_id} 3"
+        if params[:note] =~ /\Ahub for .+ 3\Z/
           status 201
           json :token => 'OTOKEN'
         else
@@ -194,10 +185,10 @@ Feature: OAuth authentication
     And $XDG_CONFIG_HOME is "$HOME/.xdg"
     When I successfully run `hub create`
     Then the file "../home/.xdg/hub" should contain "oauth_token: OTOKEN"
-    And the stderr should contain exactly:
+    And the stderr with expanded variables should contain exactly:
       """
-      Notice: config file found but not respected at: $HOME/.config/hub
-      You might want to move it to `$HOME/.xdg/hub' to avoid re-authenticating.\n
+      Notice: config file found but not respected at: <$HOME>/.config/hub
+      You might want to move it to `<$HOME>/.xdg/hub' to avoid re-authenticating.\n
       """
 
   Scenario: XDG: config from secondary directories
@@ -241,6 +232,79 @@ Feature: OAuth authentication
     And the output should not contain "github.com username"
     And the file "../home/.config/hub" should not exist
 
+  Scenario: Credentials from GITHUB_TOKEN when obtaining username fails
+    Given I am in "git://github.com/monalisa/playground.git" git repo
+    Given the GitHub API server:
+      """
+      get('/user') {
+        status 403
+        json :message => "Resource not accessible by integration",
+             :documentation_url => "https://developer.github.com/v3/users/#get-the-authenticated-user"
+      }
+      """
+    Given $GITHUB_TOKEN is "OTOKEN"
+    Given $GITHUB_USER is ""
+    When I run `hub release show v1.2.0`
+    Then the output should not contain "github.com password"
+    And the output should not contain "github.com username"
+    And the file "../home/.config/hub" should not exist
+    And the exit status should be 1
+    And the stderr should contain exactly:
+      """
+      Error getting current user: Forbidden (HTTP 403)
+      Resource not accessible by integration
+      You must specify GITHUB_USER via environment variable.\n
+      """
+
+  Scenario: Credentials from GITHUB_TOKEN and GITHUB_USER
+    Given I am in "git://github.com/monalisa/playground.git" git repo
+    Given the GitHub API server:
+      """
+      get('/user') {
+        status 403
+        json :message => "Resource not accessible by integration",
+             :documentation_url => "https://developer.github.com/v3/users/#get-the-authenticated-user"
+      }
+      get('/repos/monalisa/playground/releases') {
+        halt 401 unless request.env["HTTP_AUTHORIZATION"] == "token OTOKEN"
+        json [
+          { tag_name: 'v1.2.0',
+          }
+        ]
+      }
+      """
+    Given $GITHUB_TOKEN is "OTOKEN"
+    Given $GITHUB_USER is "hubot"
+    When I successfully run `hub release show v1.2.0`
+    Then the output should not contain "github.com password"
+    And the output should not contain "github.com username"
+    And the file "../home/.config/hub" should not exist
+
+  Scenario: Credentials from GITHUB_TOKEN and GITHUB_REPOSITORY
+    Given I am in "git://github.com/monalisa/playground.git" git repo
+    Given the GitHub API server:
+      """
+      get('/user') {
+        status 403
+        json :message => "Resource not accessible by integration",
+             :documentation_url => "https://developer.github.com/v3/users/#get-the-authenticated-user"
+      }
+      get('/repos/monalisa/playground/releases') {
+        halt 401 unless request.env["HTTP_AUTHORIZATION"] == "token OTOKEN"
+        json [
+          { tag_name: 'v1.2.0',
+          }
+        ]
+      }
+      """
+    Given $GITHUB_TOKEN is "OTOKEN"
+    Given $GITHUB_REPOSITORY is "mona-lisa/play-ground"
+    Given $GITHUB_USER is ""
+    When I successfully run `hub release show v1.2.0`
+    Then the output should not contain "github.com password"
+    And the output should not contain "github.com username"
+    And the file "../home/.config/hub" should not exist
+
   Scenario: Credentials from GITHUB_TOKEN override those from config file
     Given I am "mislav" on github.com with OAuth token "OTOKEN"
     Given the GitHub API server:
@@ -258,7 +322,7 @@ Feature: OAuth authentication
       """
     Given $GITHUB_TOKEN is "PTOKEN"
     When I successfully run `hub clone dotfiles`
-    Then it should clone "git@github.com:parkr/dotfiles.git"
+    Then it should clone "https://github.com/parkr/dotfiles.git"
     And the file "../home/.config/hub" should contain "user: mislav"
     And the file "../home/.config/hub" should contain "oauth_token: OTOKEN"
 
@@ -398,7 +462,7 @@ Feature: OAuth authentication
     And the file "../home/.config/hub" should contain "git.my.org"
     And the file "../home/.config/hub" should contain "user: mislav"
     And the file "../home/.config/hub" should contain "oauth_token: OTOKEN"
-    And the url for "mislav" should be "git@git.my.org:mislav/dotfiles.git"
+    And the url for "mislav" should be "https://git.my.org/mislav/dotfiles.git"
 
   Scenario: Broken config is missing user.
     Given a file named "../home/.config/hub" with:
@@ -431,9 +495,9 @@ Feature: OAuth authentication
   Scenario: Config file is not writeable, should exit before asking for credentials
       Given $HUB_CONFIG is "/InvalidConfigFile"
       When I run `hub create` interactively
-      Then the output should contain exactly:
+      Then the output should contain:
         """
-        open /InvalidConfigFile: permission denied\n
+        open /InvalidConfigFile:
         """
       And the exit status should be 1
       And the file "../home/.config/hub" should not exist
@@ -441,9 +505,27 @@ Feature: OAuth authentication
   Scenario: Config file is not writeable on default location, should exit before asking for credentials
       Given a directory named "../home/.config" with mode "600"
       When I run `hub create` interactively
-      Then the output should contain:
+      Then the output with expanded variables should contain:
         """
-        $HOME/.config/hub: permission denied\n
+        <$HOME>/.config/hub: permission denied\n
         """
       And the exit status should be 1
       And the file "../home/.config/hub" should not exist
+
+  Scenario: GitHub SSO challenge
+    Given I am "monalisa" on github.com with OAuth token "OTOKEN"
+    And I am in "git://github.com/acme/playground.git" git repo
+    Given the GitHub API server:
+      """
+      get('/repos/acme/playground/releases') {
+        response.headers['X-GitHub-SSO'] = 'required; url=http://example.com?auth=HASH'
+        status 403
+      }
+      """
+    When I run `hub release show v1.2.0`
+    Then the stderr should contain exactly:
+      """
+      Error fetching releases: Forbidden (HTTP 403)
+      You must authorize your token to access this organization:
+      http://example.com?auth=HASH\n
+      """

@@ -13,7 +13,7 @@ import (
 
 // https://github.com/russross/blackfriday/blob/v2/markdown.go
 const (
-	PARSER_EXTENSIONS = blackfriday.NoIntraEmphasis |
+	ParserExtensions = blackfriday.NoIntraEmphasis |
 		blackfriday.FencedCode |
 		blackfriday.SpaceHeadings |
 		blackfriday.AutoHeadingIDs |
@@ -24,8 +24,9 @@ var (
 	backslash     = []byte{'\\'}
 	enterVar      = []byte("<var>")
 	closeVar      = []byte("</var>")
+	tilde         = []byte(`\(ti`)
 	htmlEscape    = regexp.MustCompile(`<([A-Za-z][A-Za-z0-9_-]*)>`)
-	roffEscape    = regexp.MustCompile(`[&\~_-]`)
+	roffEscape    = regexp.MustCompile(`[&'\_-]`)
 	headingEscape = regexp.MustCompile(`["]`)
 	titleRe       = regexp.MustCompile(`(?P<name>[A-Za-z][A-Za-z0-9_-]+)\((?P<num>\d)\) -- (?P<title>.+)`)
 )
@@ -34,6 +35,10 @@ func escape(src []byte, re *regexp.Regexp) []byte {
 	return re.ReplaceAllFunc(src, func(c []byte) []byte {
 		return append(backslash, c...)
 	})
+}
+
+func roffText(src []byte) []byte {
+	return bytes.Replace(escape(src, roffEscape), []byte{'~'}, tilde, -1)
 }
 
 type RoffRenderer struct {
@@ -102,12 +107,12 @@ func (r *RoffRenderer) RenderNode(buf io.Writer, node *blackfriday.Node, enterin
 
 	leaf := len(node.Literal) > 0
 	if leaf {
-		if bytes.Compare(node.Literal, enterVar) == 0 {
+		if bytes.Equal(node.Literal, enterVar) {
 			io.WriteString(buf, `\fI`)
-		} else if bytes.Compare(node.Literal, closeVar) == 0 {
+		} else if bytes.Equal(node.Literal, closeVar) {
 			io.WriteString(buf, `\fP`)
 		} else {
-			buf.Write(escape(node.Literal, roffEscape))
+			buf.Write(roffText(node.Literal))
 		}
 	}
 
@@ -178,8 +183,8 @@ func (r *RoffRenderer) renderHeading(buf io.Writer, node *blackfriday.Node) {
 		io.WriteString(buf, ".ad l\n") // disable justification
 		io.WriteString(buf, ".SH \"NAME\"\n")
 		fmt.Fprintf(buf, "%s \\- %s\n",
-			escape(name, roffEscape),
-			escape(text, roffEscape),
+			roffText(name),
+			roffText(text),
 		)
 	case 2:
 		fmt.Fprintf(buf, ".SH \"%s\"\n", strings.ToUpper(string(escape(text, headingEscape))))
@@ -205,7 +210,7 @@ func Opt(buffer io.Writer, renderer blackfriday.Renderer) *renderOption {
 }
 
 func Generate(src []byte, opts ...*renderOption) {
-	parser := blackfriday.New(blackfriday.WithExtensions(PARSER_EXTENSIONS))
+	parser := blackfriday.New(blackfriday.WithExtensions(ParserExtensions))
 	ast := parser.Parse(sanitizeInput(src))
 
 	for _, opt := range opts {

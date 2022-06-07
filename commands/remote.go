@@ -5,9 +5,9 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/github/hub/git"
-	"github.com/github/hub/github"
-	"github.com/github/hub/utils"
+	"github.com/github/hub/v2/git"
+	"github.com/github/hub/v2/github"
+	"github.com/github/hub/v2/utils"
 )
 
 var cmdRemote = &Command{
@@ -21,8 +21,8 @@ remote set-url [-p] [<OPTIONS>] <NAME> <USER>[/<REPOSITORY>]
 
 ## Options:
 	-p
-		(Deprecated) Use the 'ssh:' protocol instead of 'git:' for the remote URL.
-		The writeable 'ssh:' protocol is automatically used for own repos, GitHub
+		(Deprecated) Use the ''ssh:'' protocol instead of ''git:'' for the remote URL.
+		The writeable ''ssh:'' protocol is automatically used for own repos, GitHub
 		Enterprise remotes, and private or pushable repositories.
 
 	<USER>[/<REPOSITORY>]
@@ -101,19 +101,19 @@ func transformRemoteArgs(args *Args) {
 	p := utils.NewArgsParser()
 	p.RegisterValue("-t")
 	p.RegisterValue("-m")
-	p.Parse(args.Params)
+	params, _ := p.Parse(args.Params)
+	if len(params) > 3 {
+		return
+	}
 
-	numWord := 0
-	for _, i := range p.PositionalIndices {
-		p := args.Params[i]
-		numWord += 1
-		if numWord == 2 && strings.Contains(p, "/") {
-			args.ReplaceParam(i, owner)
-		} else if numWord == 3 {
-			args.RemoveParam(i)
+	for i, pi := range p.PositionalIndices {
+		if i == 1 && strings.Contains(params[i], "/") {
+			args.ReplaceParam(pi, owner)
+		} else if i == 2 {
+			args.RemoveParam(pi)
 		}
 	}
-	if numWord == 2 && owner == "origin" {
+	if len(params) == 2 && owner == "origin" {
 		owner = hostConfig.User
 	}
 

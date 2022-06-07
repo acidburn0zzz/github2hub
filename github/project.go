@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/github/hub/git"
-	"github.com/github/hub/utils"
+	"github.com/github/hub/v2/git"
+	"github.com/github/hub/v2/utils"
 )
 
 type Project struct {
@@ -23,9 +23,9 @@ func (p Project) String() string {
 }
 
 func (p *Project) SameAs(other *Project) bool {
-	return strings.ToLower(p.Owner) == strings.ToLower(other.Owner) &&
-		strings.ToLower(p.Name) == strings.ToLower(other.Name) &&
-		strings.ToLower(p.Host) == strings.ToLower(other.Host)
+	return strings.EqualFold(p.Owner, other.Owner) &&
+		strings.EqualFold(p.Name, other.Name) &&
+		strings.EqualFold(p.Host, other.Host)
 }
 
 func (p *Project) WebURL(name, owner, path string) string {
@@ -62,7 +62,7 @@ func (p *Project) WebURL(name, owner, path string) string {
 	return url
 }
 
-func (p *Project) GitURL(name, owner string, isSSH bool) (url string) {
+func (p *Project) GitURL(name, owner string, allowPush bool) string {
 	if name == "" {
 		name = p.Name
 	}
@@ -72,15 +72,17 @@ func (p *Project) GitURL(name, owner string, isSSH bool) (url string) {
 
 	host := rawHost(p.Host)
 
-	if preferredProtocol() == "https" {
-		url = fmt.Sprintf("https://%s/%s/%s.git", host, owner, name)
-	} else if isSSH || preferredProtocol() == "ssh" {
-		url = fmt.Sprintf("git@%s:%s/%s.git", host, owner, name)
-	} else {
-		url = fmt.Sprintf("git://%s/%s/%s.git", host, owner, name)
+	switch preferredProtocol() {
+	case "git":
+		if allowPush {
+			return fmt.Sprintf("git@%s:%s/%s.git", host, owner, name)
+		}
+		return fmt.Sprintf("git://%s/%s/%s.git", host, owner, name)
+	case "ssh":
+		return fmt.Sprintf("git@%s:%s/%s.git", host, owner, name)
+	default:
+		return fmt.Sprintf("https://%s/%s/%s.git", host, owner, name)
 	}
-
-	return url
 }
 
 // Remove the scheme from host when the host url is absolute.
@@ -90,9 +92,8 @@ func rawHost(host string) string {
 
 	if u.IsAbs() {
 		return u.Host
-	} else {
-		return u.Path
 	}
+	return u.Path
 }
 
 func preferredProtocol() string {
@@ -104,7 +105,7 @@ func preferredProtocol() string {
 }
 
 func NewProjectFromRepo(repo *Repository) (p *Project, err error) {
-	url, err := url.Parse(repo.HtmlUrl)
+	url, err := url.Parse(repo.HTMLURL)
 	if err != nil {
 		return
 	}
@@ -115,7 +116,7 @@ func NewProjectFromRepo(repo *Repository) (p *Project, err error) {
 
 func NewProjectFromURL(url *url.URL) (p *Project, err error) {
 	if !knownGitHubHostsInclude(url.Host) {
-		err = &GithubHostError{url}
+		err = &HostError{url}
 		return
 	}
 

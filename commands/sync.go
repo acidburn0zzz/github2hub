@@ -5,10 +5,10 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/github/hub/git"
-	"github.com/github/hub/github"
-	"github.com/github/hub/ui"
-	"github.com/github/hub/utils"
+	"github.com/github/hub/v2/git"
+	"github.com/github/hub/v2/github"
+	"github.com/github/hub/v2/ui"
+	"github.com/github/hub/v2/utils"
 )
 
 var cmdSync = &Command{
@@ -26,7 +26,7 @@ same-named branch on the remote, treat that as its upstream branch.
 ## Options:
 	--color[=<WHEN>]
 		Enable colored output even if stdout is not a terminal. <WHEN> can be one
-		of "always" (default for '--color'), "never", or "auto" (default).
+		of "always" (default for ''--color''), "never", or "auto" (default).
 
 ## See also:
 
@@ -114,7 +114,7 @@ func sync(cmd *Command, args *Args) {
 				}
 				ui.Printf("%sUpdated branch %s%s%s (was %s).\n", green, lightGreen, branch, resetColor, diff.A[0:7])
 			} else {
-				ui.Errorf("warning: `%s' seems to contain unpushed commits\n", branch)
+				ui.Errorf("warning: '%s' seems to contain unpushed commits\n", branch)
 			}
 		} else if gone {
 			diff, err := git.NewRange(fullBranch, fullDefaultBranch)
@@ -128,7 +128,7 @@ func sync(cmd *Command, args *Args) {
 				git.Quiet("branch", "-D", branch)
 				ui.Printf("%sDeleted branch %s%s%s (was %s).\n", red, lightRed, branch, resetColor, diff.A[0:7])
 			} else {
-				ui.Errorf("warning: `%s' was deleted on %s, but appears not merged into %s\n", branch, remote.Name, defaultBranch)
+				ui.Errorf("warning: '%s' was deleted on %s, but appears not merged into '%s'\n", branch, remote.Name, defaultBranch)
 			}
 		}
 	}

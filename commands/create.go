@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/github/hub/git"
-	"github.com/github/hub/github"
-	"github.com/github/hub/ui"
-	"github.com/github/hub/utils"
+	"github.com/github/hub/v2/git"
+	"github.com/github/hub/v2/github"
+	"github.com/github/hub/v2/ui"
+	"github.com/github/hub/v2/utils"
 )
 
 var cmdCreate = &Command{
@@ -136,16 +136,16 @@ func create(command *Command, args *Args) {
 	if originRemote, err := localRepo.RemoteByName(originName); err == nil {
 		originProject, err := originRemote.Project()
 		if err != nil || !originProject.SameAs(project) {
-			ui.Errorf(`A git remote named "%s" already exists and is set to push to '%s'.\n`, originRemote.Name, originRemote.PushURL)
+			ui.Errorf("A git remote named '%s' already exists and is set to push to '%s'.\n", originRemote.Name, originRemote.PushURL)
 		}
 	} else {
 		url := project.GitURL("", "", true)
 		args.Before("git", "remote", "add", "-f", originName, url)
 	}
 
-	webUrl := project.WebURL("", "", "")
+	webURL := project.WebURL("", "", "")
 	args.NoForward()
 	flagCreateBrowse := args.Flag.Bool("--browse")
 	flagCreateCopy := args.Flag.Bool("--copy")
-	printBrowseOrCopy(args, webUrl, flagCreateBrowse, flagCreateCopy)
+	printBrowseOrCopy(args, webURL, flagCreateBrowse, flagCreateCopy)
 }

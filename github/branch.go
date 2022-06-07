@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/github/hub/git"
+	"github.com/github/hub/v2/git"
 )
 
 type Branch struct {
@@ -21,41 +21,6 @@ func (b *Branch) ShortName() string {
 func (b *Branch) LongName() string {
 	reg := regexp.MustCompile("^refs/(remotes/)?")
 	return reg.ReplaceAllString(b.Name, "")
-}
-
-func (b *Branch) PushTarget(owner string, preferUpstream bool) (branch *Branch) {
-	var err error
-	pushDefault, _ := git.Config("push.default")
-	if pushDefault == "upstream" || pushDefault == "tracking" {
-		branch, err = b.Upstream()
-		if err != nil {
-			return
-		}
-	} else {
-		shortName := b.ShortName()
-		remotes := b.Repo.remotesForPublish(owner)
-
-		var remotesInOrder []Remote
-		if preferUpstream {
-			// reverse the remote lookup order
-			// see OriginNamesInLookupOrder
-			for i := len(remotes) - 1; i >= 0; i-- {
-				remotesInOrder = append(remotesInOrder, remotes[i])
-			}
-		} else {
-			remotesInOrder = remotes
-		}
-
-		for _, remote := range remotesInOrder {
-			if git.HasFile("refs", "remotes", remote.Name, shortName) {
-				name := fmt.Sprintf("refs/remotes/%s/%s", remote.Name, shortName)
-				branch = &Branch{b.Repo, name}
-				break
-			}
-		}
-	}
-
-	return
 }
 
 func (b *Branch) RemoteName() string {

@@ -78,6 +78,9 @@ hub-delete(1)
 hub-fork(1)
 :   Fork the current repository on GitHub and add a git remote for it.
 
+hub-gist(1)
+:   Create and print GitHub Gists.
+
 hub-pull-request(1)
 :   Create a GitHub Pull Request.
 
@@ -138,12 +141,12 @@ variables.
 Alternatively, you may provide `GITHUB_TOKEN`, an access token with
 **repo** permissions. This will not be written to `~/.config/hub`.
 
-### HTTPS instead of git protocol
+### SSH instead of HTTPS protocol
 
-If you prefer the HTTPS protocol for git operations, you can configure hub to
-generate all URLs with `https:` instead of `git:` or `ssh:`:
+If you prefer the SSH protocol for git operations, you can configure hub to
+generate SSH-style URLs:
 
-    $ git config --global hub.protocol https
+    $ git config --global hub.protocol ssh
 
 This will affect `clone`, `fork`, `remote add` and other hub commands that
 expand shorthand references to GitHub repo URLs.
@@ -164,7 +167,8 @@ this can be affected with the `GITHUB_HOST` environment variable:
 ### Environment variables
 
 `HUB_VERBOSE`
-:   Enable verbose output from hub commands.
+:   If this environment variable is set, verbose logging will be printed to
+    stderr.
 
 `HUB_CONFIG`
 :   The file path where hub configuration is read from and stored. If
@@ -173,10 +177,26 @@ this can be affected with the `GITHUB_HOST` environment variable:
     searched for in `XDG_CONFIG_DIRS` per XDG Base Directory Specification.
 
 `HUB_PROTOCOL`
-:   Use one of "https|ssh|git" as preferred protocol for git clone/push.
+:   One of "https", "ssh", or "git" as preferred protocol for git clone/push.
+
+`GITHUB_HOST`
+:   The GitHub hostname to default to instead of "github.com".
 
 `GITHUB_TOKEN`
 :   OAuth token to use for GitHub API requests.
+
+`GITHUB_USER`
+:   The GitHub username of the actor of GitHub API operations.
+
+`GITHUB_PASSWORD`
+:   The GitHub password used to exchange user credentials for an OAuth token
+    that gets stored in hub configuration. If not set, it may be interactively
+    prompted for on first run.
+
+`GITHUB_REPOSITORY`
+:   A value in "OWNER/REPO" format that specifies the repository that API
+    operations should be performed against. Currently only used to infer the
+    default value of `GITHUB_USER` for API requests.
 
 ## Bugs
 

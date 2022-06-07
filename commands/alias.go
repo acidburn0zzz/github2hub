@@ -7,8 +7,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/github/hub/ui"
-	"github.com/github/hub/utils"
+	"github.com/github/hub/v2/ui"
+	"github.com/github/hub/v2/utils"
 )
 
 var cmdAlias = &Command{
@@ -18,7 +18,7 @@ var cmdAlias = &Command{
 
 ## Options
 	-s
-		Output shell script suitable for 'eval'.
+		Output shell script suitable for ''eval''.
 
 	<SHELL>
 		Specify the type of shell (default: "$SHELL" environment variable).

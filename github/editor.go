@@ -10,8 +10,9 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/github/hub/cmd"
-	"github.com/github/hub/git"
+	"github.com/github/hub/v2/cmd"
+	"github.com/github/hub/v2/git"
+	"github.com/kballard/go-shellquote"
 )
 
 const Scissors = "------------------------ >8 ------------------------"
@@ -137,7 +138,11 @@ func (e *Editor) readContent() (content []byte, err error) {
 }
 
 func openTextEditor(program, file string) error {
-	editCmd := cmd.New(program)
+	programArgs, err := shellquote.Split(program)
+	if err != nil {
+		return err
+	}
+	editCmd := cmd.NewWithArray(programArgs)
 	r := regexp.MustCompile(`\b(?:[gm]?vim)(?:\.exe)?$`)
 	if r.MatchString(editCmd.Name) {
 		editCmd.WithArg("--cmd")

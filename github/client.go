@@ -3,18 +3,21 @@ package github
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/github/hub/version"
+	"github.com/github/hub/v2/version"
 )
 
 const (
@@ -29,29 +32,38 @@ func NewClient(h string) *Client {
 }
 
 func NewClientWithHost(host *Host) *Client {
-	return &Client{host}
+	return &Client{Host: host}
 }
 
 type Client struct {
-	Host *Host
+	Host         *Host
+	cachedClient *simpleClient
+}
+
+type Gist struct {
+	Files       map[string]GistFile `json:"files"`
+	Description string              `json:"description,omitempty"`
+	ID          string              `json:"id,omitempty"`
+	Public      bool                `json:"public"`
+	HTMLURL     string              `json:"html_url"`
+}
+
+type GistFile struct {
+	Type     string `json:"type,omitempty"`
+	Language string `json:"language,omitempty"`
+	Content  string `json:"content"`
+	RawURL   string `json:"raw_url"`
 }
 
 func (client *Client) FetchPullRequests(project *Project, filterParams map[string]interface{}, limit int, filter func(*PullRequest) bool) (pulls []PullRequest, err error) {
-	api, err := client.simpleApi()
+	api, err := client.simpleAPI()
 	if err != nil {
 		return
 	}
 
 	path := fmt.Sprintf("repos/%s/%s/pulls?per_page=%d", project.Owner, project.Name, perPage(limit, 100))
 	if filterParams != nil {
-		query := url.Values{}
-		for key, value := range filterParams {
-			switch v := value.(type) {
-			case string:
-				query.Add(key, v)
-			}
-		}
-		path += "&" + query.Encode()
+		path = addQuery(path, filterParams)
 	}
 
 	pulls = []PullRequest{}
@@ -83,7 +95,7 @@ func (client *Client) FetchPullRequests(project *Project, filterParams map[strin
 }
 
 func (client *Client) PullRequest(project *Project, id string) (pr *PullRequest, err error) {
-	api, err := client.simpleApi()
+	api, err := client.simpleAPI()
 	if err != nil {
 		return
 	}
@@ -100,7 +112,7 @@ func (client *Client) PullRequest(project *Project, id string) (pr *PullRequest,
 }
 
 func (client *Client) PullRequestPatch(project *Project, id string) (patch io.ReadCloser, err error) {
-	api, err := client.simpleApi()
+	api, err := client.simpleAPI()
 	if err != nil {
 		return
 	}
@@ -114,7 +126,7 @@ func (client *Client) PullRequestPatch(project *Project, id string) (patch io.Re
 }
 
 func (client *Client) CreatePullRequest(project *Project, params map[string]interface{}) (pr *PullRequest, err error) {
-	api, err := client.simpleApi()
+	api, err := client.simpleAPI()
 	if err != nil {
 		return
 	}
@@ -122,8 +134,8 @@ func (client *Client) CreatePullRequest(project *Project, params map[string]inte
 	res, err := api.PostJSONPreview(fmt.Sprintf("repos/%s/%s/pulls", project.Owner, project.Name), params, draftsType)
 	if err = checkStatus(201, "creating pull request", res, err); err != nil {
 		if res != nil && res.StatusCode == 404 {
-			projectUrl := strings.SplitN(project.WebURL("", "", ""), "://", 2)[1]
-			err = fmt.Errorf("%s\nAre you sure that %s exists?", err, projectUrl)
+			projectURL := strings.SplitN(project.WebURL("", "", ""), "://", 2)[1]
+			err = fmt.Errorf("%s\nAre you sure that %s exists?", err, projectURL)
 		}
 		return
 	}
@@ -134,8 +146,50 @@ func (client *Client) CreatePullRequest(project *Project, params map[string]inte
 	return
 }
 
+type PullRequestMergeResponse struct {
+	SHA     string
+	Merged  bool
+	Message string
+}
+
+func (client *Client) MergePullRequest(project *Project, prNumber int, params map[string]interface{}) (mr PullRequestMergeResponse, err error) {
+	api, err := client.simpleAPI()
+	if err != nil {
+		return
+	}
+
+	res, err := api.PutJSON(fmt.Sprintf("repos/%s/%s/pulls/%d/merge", project.Owner, project.Name, prNumber), params)
+	if err = checkStatus(200, "merging pull request", res, err); err != nil {
+		return
+	}
+	defer res.Body.Close()
+
+	err = res.Unmarshal(&mr)
+	return
+}
+
+func (client *Client) DeleteBranch(project *Project, branchName string) (err error) {
+	api, err := client.simpleAPI()
+	if err != nil {
+		return
+	}
+
+	res, err := api.Delete(fmt.Sprintf("repos/%s/%s/git/refs/heads/%s", project.Owner, project.Name, branchName))
+	if err == nil {
+		defer res.Body.Close()
+		if res.StatusCode == 422 {
+			return
+		}
+	}
+	if err = checkStatus(204, "deleting branch", res, err); err != nil {
+		return
+	}
+
+	return
+}
+
 func (client *Client) RequestReview(project *Project, prNumber int, params map[string]interface{}) (err error) {
-	api, err := client.simpleApi()
+	api, err := client.simpleAPI()
 	if err != nil {
 		return
 	}
@@ -150,7 +204,7 @@ func (client *Client) RequestReview(project *Project, prNumber int, params map[s
 }
 
 func (client *Client) CommitPatch(project *Project, sha string) (patch io.ReadCloser, err error) {
-	api, err := client.simpleApi()
+	api, err := client.simpleAPI()
 	if err != nil {
 		return
 	}
@@ -163,15 +217,8 @@ func (client *Client) CommitPatch(project *Project, sha string) (patch io.ReadCl
 	return res.Body, nil
 }
 
-type Gist struct {
-	Files map[string]GistFile `json:"files"`
-}
-type GistFile struct {
-	RawUrl string `json:"raw_url"`
-}
-
 func (client *Client) GistPatch(id string) (patch io.ReadCloser, err error) {
-	api, err := client.simpleApi()
+	api, err := client.simpleAPI()
 	if err != nil {
 		return
 	}
@@ -185,13 +232,13 @@ func (client *Client) GistPatch(id string) (patch io.ReadCloser, err error) {
 	if err = res.Unmarshal(&gist); err != nil {
 		return
 	}
-	rawUrl := ""
+	rawURL := ""
 	for _, file := range gist.Files {
-		rawUrl = file.RawUrl
+		rawURL = file.RawURL
 		break
 	}
 
-	res, err = api.GetFile(rawUrl, textMediaType)
+	res, err = api.GetFile(rawURL, textMediaType)
 	if err = checkStatus(200, "getting gist patch", res, err); err != nil {
 		return
 	}
@@ -200,7 +247,7 @@ func (client *Client) GistPatch(id string) (patch io.ReadCloser, err error) {
 }
 
 func (client *Client) Repository(project *Project) (repo *Repository, err error) {
-	api, err := client.simpleApi()
+	api, err := client.simpleAPI()
 	if err != nil {
 		return
 	}
@@ -228,7 +275,7 @@ func (client *Client) CreateRepository(project *Project, description, homepage s
 		"private":     isPrivate,
 	}
 
-	api, err := client.simpleApi()
+	api, err := client.simpleAPI()
 	if err != nil {
 		return
 	}
@@ -244,7 +291,7 @@ func (client *Client) CreateRepository(project *Project, description, homepage s
 }
 
 func (client *Client) DeleteRepository(project *Project) error {
-	api, err := client.simpleApi()
+	api, err := client.simpleAPI()
 	if err != nil {
 		return err
 	}
@@ -262,11 +309,11 @@ type Release struct {
 	Draft           bool           `json:"draft"`
 	Prerelease      bool           `json:"prerelease"`
 	Assets          []ReleaseAsset `json:"assets"`
-	TarballUrl      string         `json:"tarball_url"`
-	ZipballUrl      string         `json:"zipball_url"`
-	HtmlUrl         string         `json:"html_url"`
-	UploadUrl       string         `json:"upload_url"`
-	ApiUrl          string         `json:"url"`
+	TarballURL      string         `json:"tarball_url"`
+	ZipballURL      string         `json:"zipball_url"`
+	HTMLURL         string         `json:"html_url"`
+	UploadURL       string         `json:"upload_url"`
+	APIURL          string         `json:"url"`
 	CreatedAt       time.Time      `json:"created_at"`
 	PublishedAt     time.Time      `json:"published_at"`
 }
@@ -274,12 +321,12 @@ type Release struct {
 type ReleaseAsset struct {
 	Name        string `json:"name"`
 	Label       string `json:"label"`
-	DownloadUrl string `json:"browser_download_url"`
-	ApiUrl      string `json:"url"`
+	DownloadURL string `json:"browser_download_url"`
+	APIURL      string `json:"url"`
 }
 
 func (client *Client) FetchReleases(project *Project, limit int, filter func(*Release) bool) (releases []Release, err error) {
-	api, err := client.simpleApi()
+	api, err := client.simpleAPI()
 	if err != nil {
 		return
 	}
@@ -319,19 +366,17 @@ func (client *Client) FetchRelease(project *Project, tagName string) (*Release, 
 		return release.TagName == tagName
 	})
 
-	if err == nil {
-		if len(releases) < 1 {
-			return nil, fmt.Errorf("Unable to find release with tag name `%s'", tagName)
-		} else {
-			return &releases[0], nil
-		}
-	} else {
+	if err != nil {
 		return nil, err
 	}
+	if len(releases) < 1 {
+		return nil, fmt.Errorf("Unable to find release with tag name `%s'", tagName)
+	}
+	return &releases[0], nil
 }
 
 func (client *Client) CreateRelease(project *Project, releaseParams *Release) (release *Release, err error) {
-	api, err := client.simpleApi()
+	api, err := client.simpleAPI()
 	if err != nil {
 		return
 	}
@@ -347,12 +392,12 @@ func (client *Client) CreateRelease(project *Project, releaseParams *Release) (r
 }
 
 func (client *Client) EditRelease(release *Release, releaseParams map[string]interface{}) (updatedRelease *Release, err error) {
-	api, err := client.simpleApi()
+	api, err := client.simpleAPI()
 	if err != nil {
 		return
 	}
 
-	res, err := api.PatchJSON(release.ApiUrl, releaseParams)
+	res, err := api.PatchJSON(release.APIURL, releaseParams)
 	if err = checkStatus(200, "editing release", res, err); err != nil {
 		return
 	}
@@ -363,12 +408,12 @@ func (client *Client) EditRelease(release *Release, releaseParams map[string]int
 }
 
 func (client *Client) DeleteRelease(release *Release) (err error) {
-	api, err := client.simpleApi()
+	api, err := client.simpleAPI()
 	if err != nil {
 		return
 	}
 
-	res, err := api.Delete(release.ApiUrl)
+	res, err := api.Delete(release.APIURL)
 	if err = checkStatus(204, "deleting release", res, err); err != nil {
 		return
 	}
@@ -376,43 +421,87 @@ func (client *Client) DeleteRelease(release *Release) (err error) {
 	return
 }
 
-func (client *Client) UploadReleaseAsset(release *Release, filename, label string) (asset *ReleaseAsset, err error) {
-	api, err := client.simpleApi()
+type LocalAsset struct {
+	Name     string
+	Label    string
+	Contents io.Reader
+	Size     int64
+}
+
+func (client *Client) UploadReleaseAssets(release *Release, assets []LocalAsset) (doneAssets []*ReleaseAsset, err error) {
+	api, err := client.simpleAPI()
 	if err != nil {
 		return
 	}
 
-	parts := strings.SplitN(release.UploadUrl, "{", 2)
-	uploadUrl := parts[0]
-	uploadUrl += "?name=" + url.QueryEscape(filepath.Base(filename))
-	if label != "" {
-		uploadUrl += "&label=" + url.QueryEscape(label)
+	idx := strings.Index(release.UploadURL, "{")
+	uploadURL := release.UploadURL[0:idx]
+
+	for _, asset := range assets {
+		for _, existingAsset := range release.Assets {
+			if existingAsset.Name == asset.Name {
+				if err = client.DeleteReleaseAsset(&existingAsset); err != nil {
+					return
+				}
+				break
+			}
+		}
+
+		params := map[string]interface{}{"name": filepath.Base(asset.Name)}
+		if asset.Label != "" {
+			params["label"] = asset.Label
+		}
+		uploadPath := addQuery(uploadURL, params)
+
+		var res *simpleResponse
+		attempts := 0
+		maxAttempts := 3
+		body := asset.Contents
+		for {
+			res, err = api.PostFile(uploadPath, body, asset.Size)
+			if err == nil && res.StatusCode >= 500 && res.StatusCode < 600 && attempts < maxAttempts {
+				attempts++
+				time.Sleep(time.Second * time.Duration(attempts))
+				var f *os.File
+				f, err = os.Open(asset.Name)
+				if err != nil {
+					return
+				}
+				defer f.Close()
+				body = f
+				continue
+			}
+			if err = checkStatus(201, "uploading release asset", res, err); err != nil {
+				return
+			}
+			break
+		}
+
+		newAsset := ReleaseAsset{}
+		err = res.Unmarshal(&newAsset)
+		if err != nil {
+			return
+		}
+		doneAssets = append(doneAssets, &newAsset)
 	}
 
-	res, err := api.PostFile(uploadUrl, filename)
-	if err = checkStatus(201, "uploading release asset", res, err); err != nil {
-		return
-	}
-
-	asset = &ReleaseAsset{}
-	err = res.Unmarshal(asset)
 	return
 }
 
 func (client *Client) DeleteReleaseAsset(asset *ReleaseAsset) (err error) {
-	api, err := client.simpleApi()
+	api, err := client.simpleAPI()
 	if err != nil {
 		return
 	}
 
-	res, err := api.Delete(asset.ApiUrl)
+	res, err := api.Delete(asset.APIURL)
 	err = checkStatus(204, "deleting release asset", res, err)
 
 	return
 }
 
 func (client *Client) DownloadReleaseAsset(url string) (asset io.ReadCloser, err error) {
-	api, err := client.simpleApi()
+	api, err := client.simpleAPI()
 	if err != nil {
 		return
 	}
@@ -433,7 +522,7 @@ type CIStatusResponse struct {
 type CIStatus struct {
 	State     string `json:"state"`
 	Context   string `json:"context"`
-	TargetUrl string `json:"target_url"`
+	TargetURL string `json:"target_url"`
 }
 
 type CheckRunsResponse struct {
@@ -444,16 +533,16 @@ type CheckRun struct {
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
 	Name       string `json:"name"`
-	HtmlUrl    string `json:"html_url"`
+	HTMLURL    string `json:"html_url"`
 }
 
 func (client *Client) FetchCIStatus(project *Project, sha string) (status *CIStatusResponse, err error) {
-	api, err := client.simpleApi()
+	api, err := client.simpleAPI()
 	if err != nil {
 		return
 	}
 
-	res, err := api.Get(fmt.Sprintf("repos/%s/%s/commits/%s/status", project.Owner, project.Name, sha))
+	res, err := api.Get(fmt.Sprintf("repos/%s/%s/commits/%s/status?per_page=100", project.Owner, project.Name, sha))
 	if err = checkStatus(200, "fetching statuses", res, err); err != nil {
 		return
 	}
@@ -469,15 +558,14 @@ func (client *Client) FetchCIStatus(project *Project, sha string) (status *CISta
 			sB := status.Statuses[b]
 			cmp := strings.Compare(strings.ToLower(sA.Context), strings.ToLower(sB.Context))
 			if cmp == 0 {
-				return strings.Compare(sA.TargetUrl, sB.TargetUrl) < 0
-			} else {
-				return cmp < 0
+				return strings.Compare(sA.TargetURL, sB.TargetURL) < 0
 			}
+			return cmp < 0
 		})
 	}
 	sortStatuses()
 
-	res, err = api.GetFile(fmt.Sprintf("repos/%s/%s/commits/%s/check-runs", project.Owner, project.Name, sha), checksType)
+	res, err = api.GetFile(fmt.Sprintf("repos/%s/%s/commits/%s/check-runs?per_page=100", project.Owner, project.Name, sha), checksType)
 	if err == nil && (res.StatusCode == 403 || res.StatusCode == 404 || res.StatusCode == 422) {
 		return
 	}
@@ -498,7 +586,7 @@ func (client *Client) FetchCIStatus(project *Project, sha string) (status *CISta
 		checkStatus := CIStatus{
 			State:     state,
 			Context:   checkRun.Name,
-			TargetUrl: checkRun.HtmlUrl,
+			TargetURL: checkRun.HTMLURL,
 		}
 		status.Statuses = append(status.Statuses, checkStatus)
 	}
@@ -516,7 +604,7 @@ type Repository struct {
 	Private       bool                   `json:"private"`
 	HasWiki       bool                   `json:"has_wiki"`
 	Permissions   *RepositoryPermissions `json:"permissions"`
-	HtmlUrl       string                 `json:"html_url"`
+	HTMLURL       string                 `json:"html_url"`
 	DefaultBranch string                 `json:"default_branch"`
 }
 
@@ -527,7 +615,7 @@ type RepositoryPermissions struct {
 }
 
 func (client *Client) ForkRepository(project *Project, params map[string]interface{}) (repo *Repository, err error) {
-	api, err := client.simpleApi()
+	api, err := client.simpleAPI()
 	if err != nil {
 		return
 	}
@@ -544,7 +632,7 @@ func (client *Client) ForkRepository(project *Project, params map[string]interfa
 }
 
 type Comment struct {
-	Id        int       `json:"id"`
+	ID        int       `json:"id"`
 	Body      string    `json:"body"`
 	User      *User     `json:"user"`
 	CreatedAt time.Time `json:"created_at"`
@@ -576,8 +664,8 @@ type Issue struct {
 	RequestedReviewers []User `json:"requested_reviewers"`
 	RequestedTeams     []Team `json:"requested_teams"`
 
-	ApiUrl  string `json:"url"`
-	HtmlUrl string `json:"html_url"`
+	APIURL  string `json:"url"`
+	HTMLURL string `json:"html_url"`
 
 	ClosedBy *User `json:"closed_by"`
 }
@@ -635,21 +723,14 @@ type Milestone struct {
 }
 
 func (client *Client) FetchIssues(project *Project, filterParams map[string]interface{}, limit int, filter func(*Issue) bool) (issues []Issue, err error) {
-	api, err := client.simpleApi()
+	api, err := client.simpleAPI()
 	if err != nil {
 		return
 	}
 
 	path := fmt.Sprintf("repos/%s/%s/issues?per_page=%d", project.Owner, project.Name, perPage(limit, 100))
 	if filterParams != nil {
-		query := url.Values{}
-		for key, value := range filterParams {
-			switch v := value.(type) {
-			case string:
-				query.Add(key, v)
-			}
-		}
-		path += "&" + query.Encode()
+		path = addQuery(path, filterParams)
 	}
 
 	issues = []Issue{}
@@ -681,7 +762,7 @@ func (client *Client) FetchIssues(project *Project, filterParams map[string]inte
 }
 
 func (client *Client) FetchIssue(project *Project, number string) (issue *Issue, err error) {
-	api, err := client.simpleApi()
+	api, err := client.simpleAPI()
 	if err != nil {
 		return
 	}
@@ -697,7 +778,7 @@ func (client *Client) FetchIssue(project *Project, number string) (issue *Issue,
 }
 
 func (client *Client) FetchComments(project *Project, number string) (comments []Comment, err error) {
-	api, err := client.simpleApi()
+	api, err := client.simpleAPI()
 	if err != nil {
 		return
 	}
@@ -713,7 +794,7 @@ func (client *Client) FetchComments(project *Project, number string) (comments [
 }
 
 func (client *Client) CreateIssue(project *Project, params interface{}) (issue *Issue, err error) {
-	api, err := client.simpleApi()
+	api, err := client.simpleAPI()
 	if err != nil {
 		return
 	}
@@ -729,7 +810,7 @@ func (client *Client) CreateIssue(project *Project, params interface{}) (issue *
 }
 
 func (client *Client) UpdateIssue(project *Project, issueNumber int, params map[string]interface{}) (err error) {
-	api, err := client.simpleApi()
+	api, err := client.simpleAPI()
 	if err != nil {
 		return
 	}
@@ -756,7 +837,7 @@ func (s sortedLabels) Less(i, j int) bool {
 }
 
 func (client *Client) FetchLabels(project *Project) (labels []IssueLabel, err error) {
-	api, err := client.simpleApi()
+	api, err := client.simpleAPI()
 	if err != nil {
 		return
 	}
@@ -786,7 +867,7 @@ func (client *Client) FetchLabels(project *Project) (labels []IssueLabel, err er
 }
 
 func (client *Client) FetchMilestones(project *Project) (milestones []Milestone, err error) {
-	api, err := client.simpleApi()
+	api, err := client.simpleAPI()
 	if err != nil {
 		return
 	}
@@ -814,7 +895,7 @@ func (client *Client) FetchMilestones(project *Project) (milestones []Milestone,
 }
 
 func (client *Client) GenericAPIRequest(method, path string, data interface{}, headers map[string]string, ttl int) (*simpleResponse, error) {
-	api, err := client.simpleApi()
+	api, err := client.simpleAPI()
 	if err != nil {
 		return nil, err
 	}
@@ -846,8 +927,47 @@ func (client *Client) GenericAPIRequest(method, path string, data interface{}, h
 	})
 }
 
+// GraphQL facilitates performing a GraphQL request and parsing the response
+func (client *Client) GraphQL(query string, variables interface{}, data interface{}) error {
+	api, err := client.simpleAPI()
+	if err != nil {
+		return err
+	}
+
+	payload := map[string]interface{}{
+		"query":     query,
+		"variables": variables,
+	}
+	resp, err := api.PostJSON("graphql", payload)
+	if err = checkStatus(200, "performing GraphQL", resp, err); err != nil {
+		return err
+	}
+
+	responseData := struct {
+		Data   interface{}
+		Errors []struct {
+			Message string
+		}
+	}{
+		Data: data,
+	}
+	err = resp.Unmarshal(&responseData)
+	if err != nil {
+		return err
+	}
+
+	if len(responseData.Errors) > 0 {
+		messages := []string{}
+		for _, e := range responseData.Errors {
+			messages = append(messages, e.Message)
+		}
+		return fmt.Errorf("API error: %s", strings.Join(messages, "; "))
+	}
+	return nil
+}
+
 func (client *Client) CurrentUser() (user *User, err error) {
-	api, err := client.simpleApi()
+	api, err := client.simpleAPI()
 	if err != nil {
 		return
 	}
@@ -886,7 +1006,7 @@ func (client *Client) FindOrCreateToken(user, password, twoFactorCode string) (t
 	}
 
 	params := map[string]interface{}{
-		"scopes":   []string{"repo"},
+		"scopes":   []string{"repo", "gist"},
 		"note_url": OAuthAppURL,
 	}
 
@@ -934,19 +1054,25 @@ func (client *Client) FindOrCreateToken(user, password, twoFactorCode string) (t
 	return
 }
 
-func (client *Client) ensureAccessToken() (err error) {
+func (client *Client) ensureAccessToken() error {
 	if client.Host.AccessToken == "" {
 		host, err := CurrentConfig().PromptForHost(client.Host.Host)
-		if err == nil {
-			client.Host = host
+		if err != nil {
+			return err
 		}
+		client.Host = host
 	}
-	return
+	return nil
 }
 
-func (client *Client) simpleApi() (c *simpleClient, err error) {
+func (client *Client) simpleAPI() (c *simpleClient, err error) {
 	err = client.ensureAccessToken()
 	if err != nil {
+		return
+	}
+
+	if client.cachedClient != nil {
+		c = client.cachedClient
 		return
 	}
 
@@ -961,12 +1087,14 @@ func (client *Client) simpleApi() (c *simpleClient, err error) {
 			req.Header.Set("Authorization", "token "+client.Host.AccessToken)
 		}
 	}
+
+	client.cachedClient = c
 	return
 }
 
 func (client *Client) apiClient() *simpleClient {
 	unixSocket := os.ExpandEnv(client.Host.UnixSocket)
-	httpClient := newHttpClient(os.Getenv("HUB_TEST_HOST"), os.Getenv("HUB_VERBOSE") != "", unixSocket)
+	httpClient := newHTTPClient(os.Getenv("HUB_TEST_HOST"), os.Getenv("HUB_VERBOSE") != "", unixSocket)
 	apiRoot := client.absolute(normalizeHost(client.Host.Host))
 	if !strings.HasPrefix(apiRoot.Host, "api.github.") {
 		apiRoot.Path = "/api/v3/"
@@ -974,7 +1102,7 @@ func (client *Client) apiClient() *simpleClient {
 
 	return &simpleClient{
 		httpClient: httpClient,
-		rootUrl:    apiRoot,
+		rootURL:    apiRoot,
 	}
 }
 
@@ -986,6 +1114,60 @@ func (client *Client) absolute(host string) *url.URL {
 		u.Scheme = client.Host.Protocol
 	}
 	return u
+}
+
+func (client *Client) FetchGist(id string) (gist *Gist, err error) {
+	api, err := client.simpleAPI()
+	if err != nil {
+		return
+	}
+
+	response, err := api.Get(fmt.Sprintf("gists/%s", id))
+	if err = checkStatus(200, "getting gist", response, err); err != nil {
+		return
+	}
+
+	response.Unmarshal(&gist)
+	return
+}
+
+func (client *Client) CreateGist(filenames []string, public bool) (gist *Gist, err error) {
+	api, err := client.simpleAPI()
+	if err != nil {
+		return
+	}
+	files := map[string]GistFile{}
+	var basename string
+	var content []byte
+	var gf GistFile
+
+	for _, file := range filenames {
+		if file == "-" {
+			content, err = ioutil.ReadAll(os.Stdin)
+			basename = "gistfile1.txt"
+		} else {
+			content, err = ioutil.ReadFile(file)
+			basename = path.Base(file)
+		}
+		if err != nil {
+			return
+		}
+		gf = GistFile{Content: string(content)}
+		files[basename] = gf
+	}
+
+	g := Gist{
+		Files:  files,
+		Public: public,
+	}
+
+	res, err := api.PostJSON("gists", &g)
+	if err = checkStatus(201, "creating gist", res, err); err != nil {
+		return
+	}
+
+	err = res.Unmarshal(&gist)
+	return
 }
 
 func normalizeHost(host string) string {
@@ -1000,65 +1182,165 @@ func normalizeHost(host string) string {
 	}
 }
 
-func checkStatus(expectedStatus int, action string, response *simpleResponse, err error) error {
-	if err != nil {
-		return fmt.Errorf("Error %s: %s", action, err.Error())
-	} else if response.StatusCode != expectedStatus {
-		errInfo, err := response.ErrorInfo()
-		if err == nil {
-			return FormatError(action, errInfo)
-		} else {
-			return fmt.Errorf("Error %s: %s (HTTP %d)", action, err.Error(), response.StatusCode)
-		}
-	} else {
-		return nil
+func reverseNormalizeHost(host string) string {
+	switch host {
+	case "api.github.com":
+		return GitHubHost
+	case "api.github.localhost":
+		return "github.localhost"
+	default:
+		return host
 	}
 }
 
-func FormatError(action string, err error) (ee error) {
-	switch e := err.(type) {
-	default:
-		ee = err
-	case *errorInfo:
-		statusCode := e.Response.StatusCode
-		var reason string
-		if s := strings.SplitN(e.Response.Status, " ", 2); len(s) >= 2 {
-			reason = strings.TrimSpace(s[1])
+func checkStatus(expectedStatus int, action string, response *simpleResponse, err error) error {
+	if err != nil {
+		errStr := err.Error()
+		if urlErr, isURLErr := err.(*url.Error); isURLErr {
+			errStr = fmt.Sprintf("%s %s: %s", urlErr.Op, urlErr.URL, urlErr.Err)
 		}
-
-		errStr := fmt.Sprintf("Error %s: %s (HTTP %d)", action, reason, statusCode)
-
-		var errorSentences []string
-		for _, err := range e.Errors {
-			switch err.Code {
-			case "custom":
-				errorSentences = append(errorSentences, err.Message)
-			case "missing_field":
-				errorSentences = append(errorSentences, fmt.Sprintf("Missing field: \"%s\"", err.Field))
-			case "already_exists":
-				errorSentences = append(errorSentences, fmt.Sprintf("Duplicate value for \"%s\"", err.Field))
-			case "invalid":
-				errorSentences = append(errorSentences, fmt.Sprintf("Invalid value for \"%s\"", err.Field))
-			case "unauthorized":
-				errorSentences = append(errorSentences, fmt.Sprintf("Not allowed to change field \"%s\"", err.Field))
-			}
+		return fmt.Errorf("Error %s: %s", action, errStr)
+	} else if response.StatusCode != expectedStatus {
+		errInfo, err := response.ErrorInfo()
+		if err != nil {
+			return fmt.Errorf("Error %s: %s (HTTP %d)", action, err.Error(), response.StatusCode)
 		}
+		return FormatError(action, errInfo)
+	}
+	return nil
+}
 
-		var errorMessage string
-		if len(errorSentences) > 0 {
-			errorMessage = strings.Join(errorSentences, "\n")
-		} else {
-			errorMessage = e.Message
-		}
+// FormatError annotates an HTTP response error with user-friendly messages
+func FormatError(action string, err error) error {
+	if e, ok := err.(*errorInfo); ok {
+		return formatError(action, e)
+	}
+	return err
+}
 
-		if errorMessage != "" {
-			errStr = fmt.Sprintf("%s\n%s", errStr, errorMessage)
-		}
-
-		ee = fmt.Errorf(errStr)
+func formatError(action string, e *errorInfo) error {
+	var reason string
+	if s := strings.SplitN(e.Response.Status, " ", 2); len(s) >= 2 {
+		reason = strings.TrimSpace(s[1])
 	}
 
-	return
+	errStr := fmt.Sprintf("Error %s: %s (HTTP %d)", action, reason, e.Response.StatusCode)
+
+	var errorSentences []string
+	for _, err := range e.Errors {
+		switch err.Code {
+		case "custom":
+			errorSentences = append(errorSentences, err.Message)
+		case "missing_field":
+			errorSentences = append(errorSentences, fmt.Sprintf("Missing field: \"%s\"", err.Field))
+		case "already_exists":
+			errorSentences = append(errorSentences, fmt.Sprintf("Duplicate value for \"%s\"", err.Field))
+		case "invalid":
+			errorSentences = append(errorSentences, fmt.Sprintf("Invalid value for \"%s\"", err.Field))
+		case "unauthorized":
+			errorSentences = append(errorSentences, fmt.Sprintf("Not allowed to change field \"%s\"", err.Field))
+		}
+	}
+
+	var errorMessage string
+	if len(errorSentences) > 0 {
+		errorMessage = strings.Join(errorSentences, "\n")
+	} else {
+		errorMessage = e.Message
+		if action == "getting current user" && e.Message == "Resource not accessible by integration" {
+			errorMessage = errorMessage + "\nYou must specify GITHUB_USER via environment variable."
+		}
+	}
+	if errorMessage != "" {
+		errStr = fmt.Sprintf("%s\n%s", errStr, errorMessage)
+	}
+
+	if ssoErr := ValidateGitHubSSO(e.Response); ssoErr != nil {
+		return fmt.Errorf("%s\n%s", errStr, ssoErr)
+	}
+
+	if scopeErr := ValidateSufficientOAuthScopes(e.Response); scopeErr != nil {
+		return fmt.Errorf("%s\n%s", errStr, scopeErr)
+	}
+
+	return errors.New(errStr)
+}
+
+// ValidateGitHubSSO checks for the challenge via `X-Github-Sso` header
+func ValidateGitHubSSO(res *http.Response) error {
+	if res.StatusCode != 403 {
+		return nil
+	}
+
+	sso := res.Header.Get("X-Github-Sso")
+	if !strings.HasPrefix(sso, "required; url=") {
+		return nil
+	}
+
+	url := sso[strings.IndexByte(sso, '=')+1:]
+	return fmt.Errorf("You must authorize your token to access this organization:\n%s", url)
+}
+
+// ValidateSufficientOAuthScopes warns about insufficient OAuth scopes
+func ValidateSufficientOAuthScopes(res *http.Response) error {
+	if res.StatusCode != 404 && res.StatusCode != 403 {
+		return nil
+	}
+
+	needScopes := newScopeSet(res.Header.Get("X-Accepted-Oauth-Scopes"))
+	if len(needScopes) == 0 && isGistWrite(res.Request) {
+		// compensate for a GitHub bug: gist APIs omit proper `X-Accepted-Oauth-Scopes` in responses
+		needScopes = newScopeSet("gist")
+	}
+
+	haveScopes := newScopeSet(res.Header.Get("X-Oauth-Scopes"))
+	if len(needScopes) == 0 || needScopes.Intersects(haveScopes) {
+		return nil
+	}
+
+	return fmt.Errorf("Your access token may have insufficient scopes. Visit %s://%s/settings/tokens\n"+
+		"to edit the 'hub' token and enable one of the following scopes: %s",
+		res.Request.URL.Scheme,
+		reverseNormalizeHost(res.Request.Host),
+		needScopes)
+}
+
+func isGistWrite(req *http.Request) bool {
+	if req.Method == "GET" {
+		return false
+	}
+	path := strings.TrimPrefix(req.URL.Path, "/v3")
+	return strings.HasPrefix(path, "/gists")
+}
+
+type scopeSet map[string]struct{}
+
+func (s scopeSet) String() string {
+	scopes := make([]string, 0, len(s))
+	for scope := range s {
+		scopes = append(scopes, scope)
+	}
+	sort.Sort(sort.StringSlice(scopes))
+	return strings.Join(scopes, ", ")
+}
+
+func (s scopeSet) Intersects(other scopeSet) bool {
+	for scope := range s {
+		if _, found := other[scope]; found {
+			return true
+		}
+	}
+	return false
+}
+
+func newScopeSet(s string) scopeSet {
+	scopes := scopeSet{}
+	for _, s := range strings.SplitN(s, ",", -1) {
+		if s = strings.TrimSpace(s); s != "" {
+			scopes[s] = struct{}{}
+		}
+	}
+	return scopes
 }
 
 func authTokenNote(num int) (string, error) {

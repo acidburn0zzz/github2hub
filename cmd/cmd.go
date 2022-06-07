@@ -8,11 +8,10 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/github/hub/ui"
-	"github.com/github/hub/utils"
-	"github.com/kballard/go-shellquote"
+	"github.com/github/hub/v2/ui"
 )
 
+// Cmd is a project-wide struct that represents a command to be run in the console.
 type Cmd struct {
 	Name   string
 	Args   []string
@@ -22,9 +21,20 @@ type Cmd struct {
 }
 
 func (cmd Cmd) String() string {
-	return fmt.Sprintf("%s %s", cmd.Name, strings.Join(cmd.Args, " "))
+	args := make([]string, len(cmd.Args))
+	for i, a := range cmd.Args {
+		if strings.ContainsRune(a, '"') {
+			args[i] = fmt.Sprintf(`'%s'`, a)
+		} else if a == "" || strings.ContainsRune(a, '\'') || strings.ContainsRune(a, ' ') {
+			args[i] = fmt.Sprintf(`"%s"`, a)
+		} else {
+			args[i] = a
+		}
+	}
+	return fmt.Sprintf("%s %s", cmd.Name, strings.Join(args, " "))
 }
 
+// WithArg returns the current argument
 func (cmd *Cmd) WithArg(arg string) *Cmd {
 	cmd.Args = append(cmd.Args, arg)
 
@@ -37,6 +47,15 @@ func (cmd *Cmd) WithArgs(args ...string) *Cmd {
 	}
 
 	return cmd
+}
+
+func (cmd *Cmd) Output() (string, error) {
+	verboseLog(cmd)
+	c := exec.Command(cmd.Name, cmd.Args...)
+	c.Stderr = cmd.Stderr
+	output, err := c.Output()
+
+	return string(output), err
 }
 
 func (cmd *Cmd) CombinedOutput() (string, error) {
@@ -57,9 +76,8 @@ func (cmd *Cmd) Success() bool {
 func (cmd *Cmd) Run() error {
 	if isWindows() {
 		return cmd.Spawn()
-	} else {
-		return cmd.Exec()
 	}
+	return cmd.Exec()
 }
 
 func isWindows() bool {
@@ -114,14 +132,14 @@ func (cmd *Cmd) Exec() error {
 	return syscall.Exec(binary, args, os.Environ())
 }
 
-func New(cmd string) *Cmd {
-	cmds, err := shellquote.Split(cmd)
-	utils.Check(err)
-
-	name := cmds[0]
-	args := cmds[1:]
-
-	return &Cmd{Name: name, Args: args, Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr}
+func New(name string) *Cmd {
+	return &Cmd{
+		Name:   name,
+		Args:   []string{},
+		Stdin:  os.Stdin,
+		Stdout: os.Stdout,
+		Stderr: os.Stderr,
+	}
 }
 
 func NewWithArray(cmd []string) *Cmd {
@@ -130,7 +148,7 @@ func NewWithArray(cmd []string) *Cmd {
 
 func verboseLog(cmd *Cmd) {
 	if os.Getenv("HUB_VERBOSE") != "" {
-		msg := fmt.Sprintf("$ %s %s", cmd.Name, strings.Join(cmd.Args, " "))
+		msg := fmt.Sprintf("$ %s", cmd.String())
 		if ui.IsTerminal(os.Stderr) {
 			msg = fmt.Sprintf("\033[35m%s\033[0m", msg)
 		}

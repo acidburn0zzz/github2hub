@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/github/hub/cmd"
-	"github.com/github/hub/utils"
+	"github.com/github/hub/v2/cmd"
+	"github.com/github/hub/v2/utils"
 )
 
 type Args struct {
@@ -59,28 +59,40 @@ func (a *Args) Replace(executable, command string, params ...string) {
 }
 
 func (a *Args) Commands() []*cmd.Cmd {
-	result := a.beforeChain
+	result := []*cmd.Cmd{}
+	appendFromChain := func(c *cmd.Cmd) {
+		if c.Name == "git" {
+			ga := []string{c.Name}
+			ga = append(ga, a.GlobalFlags...)
+			ga = append(ga, c.Args...)
+			result = append(result, cmd.NewWithArray(ga))
+		} else {
+			result = append(result, c)
+		}
+	}
 
+	for _, c := range a.beforeChain {
+		appendFromChain(c)
+	}
 	if !a.noForward {
 		result = append(result, a.ToCmd())
 	}
+	for _, c := range a.afterChain {
+		appendFromChain(c)
+	}
 
-	result = append(result, a.afterChain...)
 	return result
 }
 
 func (a *Args) ToCmd() *cmd.Cmd {
-	c := cmd.New(a.Executable)
-	c.WithArgs(a.GlobalFlags...)
+	c := cmd.NewWithArray(append([]string{a.Executable}, a.GlobalFlags...))
 
 	if a.Command != "" {
 		c.WithArg(a.Command)
 	}
 
 	for _, arg := range a.Params {
-		if arg != "" {
-			c.WithArg(arg)
-		}
+		c.WithArg(arg)
 	}
 
 	return c
@@ -92,7 +104,7 @@ func (a *Args) GetParam(i int) string {
 
 func (a *Args) FirstParam() string {
 	if a.ParamsSize() == 0 {
-		panic(fmt.Sprintf("Index 0 is out of bound"))
+		panic("Index 0 is out of bound")
 	}
 
 	return a.Params[0]

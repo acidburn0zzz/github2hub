@@ -12,8 +12,8 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/github/hub/ui"
-	"github.com/github/hub/utils"
+	"github.com/github/hub/v2/ui"
+	"github.com/github/hub/v2/utils"
 	"github.com/mitchellh/go-homedir"
 	"golang.org/x/crypto/ssh/terminal"
 )
@@ -35,6 +35,8 @@ type Host struct {
 
 type Config struct {
 	Hosts []*Host `toml:"hosts"`
+
+	stdinScanner *bufio.Scanner
 }
 
 func (c *Config) PromptForHost(host string) (h *Host, err error) {
@@ -87,11 +89,24 @@ func (c *Config) PromptForHost(host string) (h *Host, err error) {
 		}
 	}
 
-	currentUser, err := client.CurrentUser()
-	if err != nil {
-		return
+	userFromEnv := os.Getenv("GITHUB_USER")
+	repoFromEnv := os.Getenv("GITHUB_REPOSITORY")
+	if userFromEnv == "" && repoFromEnv != "" {
+		repoParts := strings.SplitN(repoFromEnv, "/", 2)
+		if len(repoParts) > 0 {
+			userFromEnv = repoParts[0]
+		}
 	}
-	h.User = currentUser.Login
+	if tokenFromEnv && userFromEnv != "" {
+		h.User = userFromEnv
+	} else {
+		var currentUser *User
+		currentUser, err = client.CurrentUser()
+		if err != nil {
+			return
+		}
+		h.User = currentUser.Login
+	}
 
 	if !tokenFromEnv {
 		err = newConfigService().Save(configsFile(), c)
@@ -168,8 +183,11 @@ func (c *Config) PromptForOTP() string {
 }
 
 func (c *Config) scanLine() string {
+	if c.stdinScanner == nil {
+		c.stdinScanner = bufio.NewScanner(os.Stdin)
+	}
 	var line string
-	scanner := bufio.NewScanner(os.Stdin)
+	scanner := c.stdinScanner
 	if scanner.Scan() {
 		line = scanner.Text()
 	}
@@ -185,8 +203,8 @@ func getPassword() (string, error) {
 		return "", err
 	}
 
-	c := make(chan os.Signal)
-	signal.Notify(c, os.Interrupt, os.Kill)
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		s := <-c
 		terminal.Restore(stdin, initialTermState)
@@ -257,11 +275,11 @@ func configsFile() string {
 }
 
 func homeConfig() (string, error) {
-	if home, err := homedir.Dir(); err != nil {
+	home, err := homedir.Dir()
+	if err != nil {
 		return "", err
-	} else {
-		return filepath.Join(home, ".config"), nil
 	}
+	return filepath.Join(home, ".config"), nil
 }
 
 func determineConfigLocation() (string, error) {
@@ -375,7 +393,7 @@ func CheckWriteable(filename string) error {
 	return nil
 }
 
-// Public for testing purpose
+// CreateTestConfigs is public for testing purposes
 func CreateTestConfigs(user, token string) *Config {
 	f, _ := ioutil.TempFile("", "test-config")
 	os.Setenv("HUB_CONFIG", f.Name())

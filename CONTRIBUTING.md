@@ -9,10 +9,13 @@ This project adheres to a [Code of Conduct][code-of-conduct]. By participating, 
 
 You will need:
 
-1. Go 1.9+
+1. Go 1.11+
 1. Ruby 1.9+ with Bundler
 2. git 1.8+
 3. tmux & zsh (optional) - for running shell completion tests
+
+If setting up either Go or Ruby for development proves to be a pain, you can
+run the test suite in a prepared Docker container via `script/docker`.
 
 ## What makes a good hub feature
 
@@ -25,10 +28,11 @@ feature is a good idea for hub if it improves some workflow for a GitHub user.
 * If you're proposing to add a new custom command such as `hub foo`, please
   research if there's a possibility that such a custom command could conflict
   with other commands from popular 3rd party git projects.
+* If your contribution fixes a security vulnerability, please refer to the [SECURITY.md](./.github/SECURITY.md) security policy file
 
 ## How to install dependencies and run tests
 
-1. [Clone the project](./README.md#source) into your GOPATH
+1. [Clone the project](./README.md#source)
 2. Verify that existing tests pass:
     `make test-all`
 3. Create a topic branch:
@@ -43,29 +47,14 @@ feature is a good idea for hub if it improves some workflow for a GitHub user.
 8. Open a pull request describing your changes:
     `bin/hub pull-request`
 
-Vendored Go dependencies are managed with [`dep`](https://golang.github.io/dep/docs/daily-dep.html).
-Check `dep help ensure` for information on how to add or update a vendored
+Vendored Go dependencies are managed with [`go mod`](https://github.com/golang/go/wiki/Modules).
+Check `go help mod` for information on how to add or update a vendored
 dependency.
 
 ## How to write tests
 
-The new test suite is written in Cucumber under `features/` directory. Each
-scenario is actually making real invocations to `hub` on the command-line in the
-context of a real (dynamically created) git repository.
+Go unit tests are in `*_test.go` files and are runnable with `make test`. These
+run really fast (under 10s).
 
-Whenever a scenario requires talking to the GitHub API, a fake HTTP server is
-spun locally to replace the real GitHub API. This is done so that the test suite
-runs faster and is available offline as well. The fake API server is defined
-as a Sinatra app inline in each scenario:
-
-```
-Given the GitHub API server:
-  """
-  post('/repos/github/hub/pulls') {
-    status 200
-  }
-  """
-```
-
-The best way to learn to write new tests is to study the existing scenarios for
-commands that are similar to those that you want to add or change.
+However, most hub functionality is exercised through integration-style tests
+written in Cucumber. See [Features](./features) for more info.
